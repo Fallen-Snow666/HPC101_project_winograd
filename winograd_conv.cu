@@ -38,15 +38,20 @@ __global__ void filter_transform_kernel(const float* filter, float* U, int K, in
 
     float g[3][3];
     const float* g_ptr = filter + (k * C + c) * 9;
+    #pragma unroll
     for (int i = 0; i < 3; ++i) {
+        #pragma unroll
         for (int j = 0; j < 3; ++j) {
             g[i][j] = g_ptr[i * 3 + j];
         }
     }
 
     float temp[4][3] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        #pragma unroll
         for (int j = 0; j < 3; ++j) {
+            #pragma unroll
             for (int l = 0; l < 3; ++l) {
                 temp[i][j] += G[i][l] * g[l][j];
             }
@@ -54,15 +59,20 @@ __global__ void filter_transform_kernel(const float* filter, float* U, int K, in
     }
 
     float u_kc[4][4] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
+            #pragma unroll
             for (int l = 0; l < 3; ++l) {
                 u_kc[i][j] += temp[i][l] * G[j][l];
             }
         }
     }
 
+    #pragma unroll
     for (int i = 0; i < 4; i++) {
+        #pragma unroll
         for (int j = 0; j < 4; j++) {
             U[(i * 4 + j) * K * C + k * C + c] = u_kc[i][j];
         }
@@ -86,7 +96,9 @@ __global__ void image_transform_kernel(const float* image, float* V, int N, int 
     int w_start = tile_x * 2;
 
     float d[4][4];
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
             int h = h_start + i;
             int w = w_start + j;
@@ -99,8 +111,11 @@ __global__ void image_transform_kernel(const float* image, float* V, int N, int 
     }
 
     float temp[4][4] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
+            #pragma unroll
             for (int l = 0; l < 4; ++l) {
                 temp[i][j] += B_T[i][l] * d[l][j];
             }
@@ -108,15 +123,20 @@ __global__ void image_transform_kernel(const float* image, float* V, int N, int 
     }
     
     float v_cp[4][4] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
+            #pragma unroll
             for (int l = 0; l < 4; ++l) {
                 v_cp[i][j] += temp[i][l] * B[l][j];
             }
         }
     }
 
+    #pragma unroll
     for (int i = 0; i < 4; i++) {
+        #pragma unroll
         for (int j = 0; j < 4; j++) {
             V[(i * 4 + j) * C * P_total + c * P_total + p] = v_cp[i][j];
         }
@@ -137,15 +157,20 @@ __global__ void output_transform_kernel(const float* M, float* out, int N, int K
     int tile_x = p_local % P_W;
 
     float m_kp[4][4];
+    #pragma unroll
     for (int i = 0; i < 4; i++) {
+        #pragma unroll
         for (int j = 0; j < 4; j++) {
             m_kp[i][j] = M[(i * 4 + j) * K * P_total + k * P_total + p];
         }
     }
     
     float temp[2][4] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 2; ++i) {
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
+            #pragma unroll
             for (int l = 0; l < 4; ++l) {
                 temp[i][j] += A_T[i][l] * m_kp[l][j];
             }
@@ -155,15 +180,20 @@ __global__ void output_transform_kernel(const float* M, float* out, int N, int K
     float A[4][2] = {{1.0f, 0.0f}, {1.0f, 1.0f}, {1.0f, -1.0f}, {0.0f, -1.0f}};
 
     float Y[2][2] = {{0.0f}};
+    #pragma unroll
     for (int i = 0; i < 2; ++i) {
+        #pragma unroll
         for (int j = 0; j < 2; ++j) {
+            #pragma unroll
             for (int l = 0; l < 4; ++l) {
                 Y[i][j] += temp[i][l] * A[l][j];
             }
         }
     }
 
+    #pragma unroll
     for (int i = 0; i < 2; ++i) {
+        #pragma unroll
         for (int j = 0; j < 2; ++j) {
             int h = tile_y * 2 + i;
             int w = tile_x * 2 + j;
