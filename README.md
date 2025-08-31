@@ -1,98 +1,112 @@
-# 大作业题目一：Winograd 卷积优化 (GPU 版本)
+# Winograd 卷积
 
-## 简介
-本目录下提供了 Winograd 算法的 GPU CUDA 实现，使用 Thrust device vectors 进行内存管理。主要包括以下文件：
+本项目是 Winograd 卷积算法的一个高性能、双卡并行实现。代码经过深度优化，旨在最大化利用双 NVIDIA V100 GPU 节点的计算能力。
 
-- `naive_conv.cu` 文件中包含了使用朴素卷积算法的基准实现，请不要修改；
-- `winograd_conv.cu` 文件中的提供了未经优化的 F(2x2, 3x3) 的 Winograd 卷积算法实现，您需要在此基础上保留 `winograd_conv` 的函数签名进行优化；
-- `main.cu` 文件中包含了测试代码和性能评估，请不要修改 （多卡并行例外）。
+### 核心优化技术
 
-## 编译和运行
-Makefile 文件中定义了编译规则，您可以尝试使用不同编译器和编译参数来优化性能。默认使用 `nvcc -O3` 编译。
+* **并行模型**: 采用基于 **数据并行** 的双 GPU 方案，将每个卷积层的批次 (Batch) 工作量平分给两张 GPU 卡处理。
+* **通信库**: 使用 NVIDIA 官方的 **NCCL** 库 (`ncclAllGather`) 实现 GPU 间高效、低延迟的结果合并。
+* **计算核心**: 使用 NVIDIA 开源的 **CUTLASS** C++ 模板库执行核心的批量矩阵乘法（Batched GEMM），以实现编译时深度优化。
+* **Winograd 方案**: 主力方案采用计算密度更高的 **F(4x4, 3x3)**，对特定小通道层则回退到轻量级的 **F(2x2, 3x3)** 方案以保证鲁棒性。
+* **性能调优**: 针对已知网络层维度，采用**启发式参数分发 (Heuristic-Based Dispatcher)** 策略，为每个核函数选择预先手动调优好的最优启动参数，以压榨硬件性能。
+* **内存管理**: 在主机代码中为 GPU 预先分配大型“工作区 (Workspace)”内存，并在循环中复用，避免了反复内存分配/释放带来的巨大开销。
 
-```bash
-# 使用 Makefile 编译
-make
+### 环境与依赖
 
-# 或者直接使用 nvcc 编译
-nvcc -O3 main.cu naive_conv.cu winograd_conv.cu -o winograd
+* **硬件**: 2 x NVIDIA V100 GPU (或任何支持 `sm_70` 及以上架构的双卡节点)
+* **软件环境**:
+    * **Spack 包管理器**: 用于加载编译和运行环境。
+    * **nvhpc 包**: NVIDIA HPC SDK，提供了 CUDA 编译器 (`nvcc`) 和 NCCL 库。
+    * **CUTLASS 库**: 需要从 GitHub 手动克隆。
+* **作业调度**: Slurm
+
+### 如何编译
+
+1.  **获取 CUTLASS 库**
+
+    编译前，必须先将 CUTLASS 库克隆到项目根目录。`Makefile` 文件配置为在 `./cutlass/include` 路径下寻找其头文件。
+    ```bash
+    # 确保你位于项目根目录 (包含 Makefile 的目录)
+    git clone [https://github.com/NVIDIA/cutlass.git](https://github.com/NVIDIA/cutlass.git)
+    ```
+
+2.  **加载编译环境**
+
+    使用 Spack 加载 `nvhpc` 套件，以获取 `nvcc` 编译器和 NCCL 库。
+    ```bash
+    spack load nvhpc
+    ```
+
+3.  **执行编译**
+
+    直接运行 `make` 命令即可。
+    ```bash
+    make
+    ```
+    成功后，会生成一个名为 `winograd` 的可执行文件。
+
+### 如何运行
+
+1.  **准备运行脚本 (`run.sh`)**
+
+    代码的运行通过 Slurm 作业脚本提交。请创建或确保 `run.sh` 文件内容如下。该脚本负责申请资源、设置运行时环境并执行程序。
+    ```bash
+    #!/bin/bash
+    #SBATCH --job-name=winograd
+    #SBATCH --partition=V100
+    #SBATCH --nodes=1
+    #SBATCH --ntasks=1
+    #SBATCH --gpus=2         # 必须申请2个GPU
+    #SBATCH --cpus-per-task=8
+    #SBATCH --time=01:00:00
+    #SBATCH --output=%x_%j.log
+
+    # 设置 Spack 环境
+    source /pxe/opt/spack/share/spack/setup-env.sh
+    spack load nvhpc
+
+    # 手动添加 NCCL 库的运行时搜索路径
+    # (这是一个在 Spack 环境可能出问题时的保障措施)
+    NCCL_LIB_PATH=/pxe/opt/spack/opt/spack/linux-debian12-haswell/gcc-12.2.0/nvhpc-25.1-gfpvhsdurdxu5qqwgkxsn6m76eohxn25/Linux_x86_64/25.1/comm_libs/12.6/nccl/lib
+    export LD_LIBRARY_PATH=$NCCL_LIB_PATH:$LD_LIBRARY_PATH
+
+    # 运行 GPU 程序
+    ./winograd inputs/config.txt
+    ```
+
+2.  **提交作业**
+
+    使用 `sbatch` 命令提交作业。
+    ```bash
+    sbatch run.sh
+    ```
+
+3.  **查看结果**
+
+    作业运行结束后，结果会保存在一个名为 `winograd_[作业ID].log` 的文件中。你可以使用 `cat` 或 `less` 命令查看。
+
+### 预期输出示例
+
+一个成功的运行输出应该类似下面这样，显示所有层计算正确，并给出最终的性能数据和加速比。
+
 ```
+NCCL communicators initialized for 2 GPUs.
+============================================================
 
-`inputs` 文件夹中提供了一组测试样例，进行性能评估和正确性测试。要运行程序，可以使用以下命令：
+=== Running Naive Convolution (Baseline on a single GPU) ===
+... (各层结果) ...
+Baseline Total: 1087.195 ms (1953.27 GFLOPS)
 
-```bash
-./winograd inputs/config.txt
-```
-
-您将会在命令行中看到输出结果，以下是一个示例输出：
-
-```
-$ ./winograd inputs/config.txt 
-=== Running Naive Convolution ===
-Layer  0: 1.49 ms (1800.00 GFLOPS)
-Layer  1: 13.25 ms (2155.21 GFLOPS)
-Layer  2: 24.87 ms (2295.65 GFLOPS)
-Layer  3: 48.63 ms (2347.90 GFLOPS)
-Layer  4: 99.46 ms (2296.10 GFLOPS)
-Layer  5: 37.38 ms (2326.91 GFLOPS)
-Layer  6: 74.30 ms (2341.25 GFLOPS)
-Layer  7: 148.40 ms (2344.36 GFLOPS)
-Layer  8: 297.09 ms (2342.00 GFLOPS)
-Layer  9: 111.04 ms (2132.24 GFLOPS)
-Layer 10: 1.02 ms (2085.59 GFLOPS)
-Layer 11: 19.40 ms (2335.41 GFLOPS)
-Layer 12: 9.35 ms (2325.11 GFLOPS)
-Layer 13: 18.61 ms (2336.54 GFLOPS)
-Layer 14: 5.59 ms (2189.67 GFLOPS)
-Layer 15: 2.08 ms (2045.98 GFLOPS)
-Layer 16: 5.47 ms (2070.24 GFLOPS)
-Layer 17: 5.72 ms (1900.61 GFLOPS)
-Baseline Total: 923.14 ms (2300.40 GFLOPS)
-
-=== Running Winograd Convolution ===
-Layer  0: 1.26 ms (2128.92 GFLOPS)
-Layer  1: 11.12 ms (2566.13 GFLOPS)
-Layer  2: 22.13 ms (2580.34 GFLOPS)
-Layer  3: 44.45 ms (2569.12 GFLOPS)
-Layer  4: 89.36 ms (2555.79 GFLOPS)
-Layer  5: 33.74 ms (2578.05 GFLOPS)
-Layer  6: 67.50 ms (2577.12 GFLOPS)
-Layer  7: 134.72 ms (2582.40 GFLOPS)
-Layer  8: 271.27 ms (2564.94 GFLOPS)
-Layer  9: 91.10 ms (2598.86 GFLOPS)
-Layer 10: 1.01 ms (2113.21 GFLOPS)
-Layer 11: 17.65 ms (2567.90 GFLOPS)
-Layer 12: 8.52 ms (2550.79 GFLOPS)
-Layer 13: 16.87 ms (2578.20 GFLOPS)
-Layer 14: 4.85 ms (2524.08 GFLOPS)
-Layer 15: 1.73 ms (2459.30 GFLOPS)
-Layer 16: 4.52 ms (2505.10 GFLOPS)
-Layer 17: 4.50 ms (2414.01 GFLOPS)
-Custom Total: 826.27 ms (2570.08 GFLOPS)
+=== Running Winograd Convolution (2 GPUs with NCCL) ===
+... (各层结果, 包含 INFO: Using heuristic config ... 等信息) ...
+Winograd Total (2 GPUs): 76.382 ms (27802.30 GFLOPS)
 
 === Correctness Check ===
-Layer  0: CORRECT (Speedup: 1.18x)
-Layer  1: CORRECT (Speedup: 1.19x)
-Layer  2: CORRECT (Speedup: 1.12x)
-Layer  3: CORRECT (Speedup: 1.09x)
-Layer  4: CORRECT (Speedup: 1.11x)
-Layer  5: CORRECT (Speedup: 1.11x)
-Layer  6: CORRECT (Speedup: 1.10x)
-Layer  7: CORRECT (Speedup: 1.10x)
-Layer  8: CORRECT (Speedup: 1.10x)
-Layer  9: CORRECT (Speedup: 1.22x)
-Layer 10: CORRECT (Speedup: 1.01x)
-Layer 11: CORRECT (Speedup: 1.10x)
-Layer 12: CORRECT (Speedup: 1.10x)
-Layer 13: CORRECT (Speedup: 1.10x)
-Layer 14: CORRECT (Speedup: 1.15x)
-Layer 15: CORRECT (Speedup: 1.20x)
-Layer 16: CORRECT (Speedup: 1.21x)
-Layer 17: CORRECT (Speedup: 1.27x)
+... (各层 CORRECTNESS 检查) ...
 
 === Final Results ===
-Results are correct!
-Naive:    923.14 ms (2300.40 GFLOPS)
-Winograd: 826.27 ms (2570.08 GFLOPS)
-Overall speedup: 1.12x
+All layers passed correctness check!
+Baseline Total (1 GPU): 1087.066 ms (1953.51 GFLOPS)
+Winograd Total (2 GPUs): 76.344 ms (27816.04 GFLOPS)
+Overall Speedup: 14.24x
 ```
